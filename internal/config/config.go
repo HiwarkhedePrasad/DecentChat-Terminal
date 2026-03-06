@@ -13,6 +13,11 @@ type Config struct {
 	DataDir     string
 }
 
+var (
+	DefaultSupabaseURL = "YourKey"
+	DefaultSupabaseKey = "Your Key"
+)
+
 func Load() (*Config, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -28,8 +33,8 @@ func Load() (*Config, error) {
 	loadEnvFile(".env")
 
 	cfg := &Config{
-		SupabaseURL: getEnv("SUPABASE_URL", "YourKey"),
-		SupabaseKey: getEnv("SUPABASE_KEY", "Your Key"),
+		SupabaseURL: getEnv("SUPABASE_URL", DefaultSupabaseURL),
+		SupabaseKey: getEnv("SUPABASE_KEY", DefaultSupabaseKey),
 		DataDir:     dataDir,
 	}
 

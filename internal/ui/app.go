@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"decentchat/internal/identity"
+	"decentchat/internal/network"
 	"decentchat/internal/signaling"
-	"decentchat/internal/webrtc"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,7 +17,8 @@ import (
 type Model struct {
 	identity        *identity.Identity
 	signalingClient *signaling.Client
-	webrtcManager   *webrtc.Manager
+	networkManager  *network.Manager
+	tunnelURL       string
 	version         string
 
 	// UI State
@@ -33,8 +34,7 @@ type Model struct {
 	mode string // "normal", "connecting", "chat", "waiting"
 
 	// For incoming connections
-	pendingOffer    string
-	pendingPeer     *signaling.User
+	pendingPeerID   string
 
 	// Poll ticker
 	lastPollTime    time.Time
@@ -76,16 +76,17 @@ type (
 	peerMsg        string
 	connectedMsg   struct{ peerID string }
 	disconnectedMsg struct{}
-	offerMsg       struct{ offer string; peer *signaling.User }
+	incomingMsg    struct{ peerID string }
 	pollMsg        struct{}
 )
 
 // NewApp creates a new application
-func NewApp(id *identity.Identity, sigClient *signaling.Client, webrtcMgr *webrtc.Manager, version string) *tea.Program {
+func NewApp(id *identity.Identity, sigClient *signaling.Client, networkMgr *network.Manager, localTunnel string, version string) *tea.Program {
 	m := Model{
 		identity:        id,
 		signalingClient: sigClient,
-		webrtcManager:   webrtcMgr,
+		networkManager:  networkMgr,
+		tunnelURL:       localTunnel,
 		version:         version,
 		messages:        make([]string, 0),
 		status:          "Online",
@@ -94,8 +95,8 @@ func NewApp(id *identity.Identity, sigClient *signaling.Client, webrtcMgr *webrt
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
-	// Set up WebRTC callbacks to send messages to the bubbletea program
-	webrtcMgr.SetCallbacks(
+	// Set up Network callbacks to send messages to the bubbletea program
+	networkMgr.SetCallbacks(
 		func(msg string) {
 			p.Send(peerMsg(msg))
 		},
@@ -104,6 +105,9 @@ func NewApp(id *identity.Identity, sigClient *signaling.Client, webrtcMgr *webrt
 		},
 		func() {
 			p.Send(disconnectedMsg{})
+		},
+		func(peerID string) {
+			p.Send(incomingMsg{peerID: peerID})
 		},
 	)
 
@@ -171,22 +175,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case disconnectedMsg:
 		m.mode = "normal"
 		m.connectedPeer = ""
-		m.pendingOffer = ""
-		m.pendingPeer = nil
+		m.pendingPeerID = ""
 		m.messages = append(m.messages, errorStyle.Render("✗ Disconnected from peer"))
 
-	case offerMsg:
-		// Incoming connection request
+	case incomingMsg:
+		// Incoming WebSocket connection hit our local server
 		if m.mode == "normal" && m.connectedPeer == "" {
-			m.pendingOffer = msg.offer
-			m.pendingPeer = msg.peer
+			m.pendingPeerID = msg.peerID
 			m.mode = "waiting"
-			peerID := msg.peer.UserID
-			if len(peerID) > 8 {
-				peerID = peerID[:8]
+			shortID := msg.peerID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
 			}
 			m.messages = append(m.messages,
-				systemStyle.Render(fmt.Sprintf("[System] Incoming connection from: %s", peerID)),
+				systemStyle.Render(fmt.Sprintf("[System] Incoming connection from: %s", shortID)),
 				systemStyle.Render("[System] Type /accept to accept or /decline to decline"),
 			)
 		}
@@ -259,7 +261,7 @@ func (m Model) renderHeader() string {
 	if m.connectedPeer != "" {
 		sb.WriteString(" │ ")
 		sb.WriteString(successStyle.Render(fmt.Sprintf("Connected: %s", m.connectedPeer)))
-	} else if m.mode == "waiting" && m.pendingPeer != nil {
+	} else if m.mode == "waiting" && m.pendingPeerID != "" {
 		sb.WriteString(" │ ")
 		sb.WriteString(statusStyle.Render("Incoming connection..."))
 	} else if m.mode == "connecting" {
@@ -313,7 +315,7 @@ func (m *Model) handleInput() (tea.Model, tea.Cmd) {
 
 	// If in chat mode, send message
 	if m.mode == "chat" && m.connectedPeer != "" {
-		if err := m.webrtcManager.SendMessage(input); err != nil {
+		if err := m.networkManager.SendMessage(input); err != nil {
 			m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
 		} else {
 			m.messages = append(m.messages, successStyle.Render("[You] ")+input)
@@ -438,23 +440,16 @@ func (m *Model) connectToPeer(peerID string) (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, systemStyle.Render(fmt.Sprintf("[System] Connecting to %s...", peerID)))
 	m.mode = "connecting"
 
-	// Create offer
-	offer, err := m.webrtcManager.CreateOffer(targetUser)
+	// Connect to peer's tunnel
+	err = m.networkManager.ConnectToPeer(targetUser.UserID, targetUser.TunnelURL, targetUser.PublicEncKey, targetUser.PublicIdentityKey)
 	if err != nil {
 		m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
 		m.mode = "normal"
 		return m, nil
 	}
 
-	// Send offer through signaling - store in our own record for the peer to find
-	if err := m.signalingClient.SetOfferForPeer(targetUser.UserID, offer); err != nil {
-		m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
-		m.mode = "normal"
-		return m, nil
-	}
-
 	m.connectedPeer = peerID
-	m.messages = append(m.messages, systemStyle.Render("[System] Offer sent. Waiting for peer to answer..."))
+	m.messages = append(m.messages, systemStyle.Render("[System] Dialed peer. Waiting for them to accept..."))
 
 	return m, nil
 }
@@ -465,70 +460,66 @@ func (m *Model) disconnect() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.webrtcManager.Close()
-	m.signalingClient.ClearOffer()
+	m.networkManager.CloseConnection()
 
 	m.messages = append(m.messages, systemStyle.Render(fmt.Sprintf("[System] Disconnected")))
 	m.connectedPeer = ""
 	m.mode = "normal"
-	m.pendingOffer = ""
-	m.pendingPeer = nil
+	m.pendingPeerID = ""
 
 	return m, nil
 }
 
 func (m *Model) acceptConnection() (tea.Model, tea.Cmd) {
-	if m.pendingOffer == "" || m.pendingPeer == nil {
+	if m.pendingPeerID == "" {
 		m.messages = append(m.messages, systemStyle.Render("[System] No pending connection request."))
 		return m, nil
 	}
 
-	peerID := m.pendingPeer.UserID
+	peerID := m.pendingPeerID
 	if len(peerID) > 8 {
 		peerID = peerID[:8]
 	}
 
 	m.messages = append(m.messages, systemStyle.Render(fmt.Sprintf("[System] Accepting connection from %s...", peerID)))
 
-	// Handle the offer and create answer
-	answer, err := m.webrtcManager.HandleOffer(m.pendingOffer, m.pendingPeer)
+	// Fetch peer keys from signaling server since we only got their ID
+	peerUser, err := m.signalingClient.GetUser(m.pendingPeerID)
 	if err != nil {
-		m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
+		m.messages = append(m.messages, errorStyle.Render("[Error] Failed to fetch peer keys: ")+err.Error())
 		m.mode = "normal"
-		m.pendingOffer = ""
-		m.pendingPeer = nil
+		m.pendingPeerID = ""
+		m.networkManager.DeclineConnection()
 		return m, nil
 	}
 
-	// Send answer through signaling - write to OUR row for the caller to find
-	if err := m.signalingClient.SetAnswerForPeer(m.identity.UserID, answer); err != nil {
+	// Accept the connection and establish secure shared secret
+	err = m.networkManager.AcceptConnection(peerUser.PublicEncKey, peerUser.PublicIdentityKey)
+	if err != nil {
 		m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
 		m.mode = "normal"
-		m.pendingOffer = ""
-		m.pendingPeer = nil
+		m.pendingPeerID = ""
 		return m, nil
 	}
 
 	m.connectedPeer = peerID
-	m.mode = "answering"
-	m.pendingOffer = ""
-	m.pendingPeer = nil
-	m.messages = append(m.messages, systemStyle.Render("[System] Answer sent. Establishing WebRTC channel..."))
+	m.mode = "chat"
+	m.pendingPeerID = ""
+	m.messages = append(m.messages, systemStyle.Render("[System] Connection accepted. You can now chat!"))
 
 	return m, nil
 }
 
 func (m *Model) declineConnection() (tea.Model, tea.Cmd) {
-	if m.pendingOffer == "" {
+	if m.pendingPeerID == "" {
 		m.messages = append(m.messages, systemStyle.Render("[System] No pending connection request."))
 		return m, nil
 	}
 
 	m.messages = append(m.messages, systemStyle.Render("[System] Connection declined"))
-	m.signalingClient.ClearOffer()
+	m.networkManager.DeclineConnection()
 	m.mode = "normal"
-	m.pendingOffer = ""
-	m.pendingPeer = nil
+	m.pendingPeerID = ""
 
 	return m, nil
 }
@@ -552,42 +543,13 @@ func pollForUpdates(client *signaling.Client, userID string) tea.Cmd {
 
 func checkForOffers(m *Model) tea.Cmd {
 	return func() tea.Msg {
-		// Check if someone has sent us an offer
-		user, err := m.signalingClient.GetUser(m.identity.UserID)
-		if err != nil {
-			return nil
-		}
-
-		// Check for incoming offer
-		if user.WebRTCOffer != "" && m.pendingOffer == "" && m.connectedPeer == "" {
-			// We have an incoming offer, need to find who sent it
-			// For now, we'll use a simplified approach
-			users, _ := m.signalingClient.GetOnlineUsers()
-			for _, u := range users {
-				if u.UserID != m.identity.UserID {
-					// Check if this user has an answer waiting for us
-					return offerMsg{
-						offer: user.WebRTCOffer,
-						peer:  &u,
-					}
-				}
-			}
-		}
-
-		// Check for answer if we're connecting
-		if m.mode == "connecting" && m.connectedPeer != "" {
-			// Find the peer
-			users, _ := m.signalingClient.GetOnlineUsers()
-			for _, u := range users {
-				if strings.HasPrefix(u.UserID, m.connectedPeer) && u.WebRTCAnswer != "" {
-					if err := m.webrtcManager.HandleAnswer(u.WebRTCAnswer); err != nil {
-						return errorMsg("Failed to handle answer: " + err.Error())
-					}
-					return connectedMsg{peerID: m.connectedPeer}
-				}
-			}
-		}
-
+		// Since WebSocket connections directly trigger the incoming webhook on the server,
+		// there are no "offers" to poll from the signaling server anymore.
+		// However, we still need to check if the peer we dialed has accepted and marked themselves 
+		// "chatting" or dropped... wait, no we don't.
+		// If we are "connecting", we are just waiting for the peer to accept the WebSocket connection on their end.
+		// So this function is largely a no-op now, except maybe to check if the peer drops offline.
+		
 		return nil
 	}
 }

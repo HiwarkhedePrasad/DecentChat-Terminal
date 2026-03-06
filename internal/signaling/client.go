@@ -17,8 +17,7 @@ type User struct {
 	UserID            string    `json:"user_id"`
 	PublicIdentityKey string    `json:"public_identity_key"`
 	PublicEncKey      string    `json:"public_enc_key"`
-	WebRTCOffer       string    `json:"webrtc_offer"`
-	WebRTCAnswer      string    `json:"webrtc_answer"`
+	TunnelURL         string    `json:"tunnel_url"`
 	OnlineStatus      bool      `json:"online_status"`
 	LastSeen          time.Time `json:"last_seen"`
 }
@@ -61,50 +60,33 @@ func (c *Client) SetOffline(userID string) error {
 		"public_identity_key": crypto.EncodeEd25519PublicKey(c.identity.KeyPair.Ed25519Public),
 		"public_enc_key":      crypto.EncodePublicKey(c.identity.KeyPair.X25519Public),
 		"online_status":       false,
-		"webrtc_offer":        "",
-		"webrtc_answer":       "",
+		"tunnel_url":          "",
 		"last_seen":           time.Now().UTC().Format(time.RFC3339),
 	}
 
 	return c.upsertUser(user)
 }
 
-// UpdateOffer updates the WebRTC offer for the user
-func (c *Client) UpdateOffer(offer string) error {
+// UpdateTunnelURL updates the tunnel_url for the user
+func (c *Client) UpdateTunnelURL(tunnelURL string) error {
 	user := map[string]interface{}{
 		"user_id":             c.identity.UserID,
 		"public_identity_key": crypto.EncodeEd25519PublicKey(c.identity.KeyPair.Ed25519Public),
 		"public_enc_key":      crypto.EncodePublicKey(c.identity.KeyPair.X25519Public),
-		"webrtc_offer":        offer,
-		"webrtc_answer":       "",
+		"tunnel_url":          tunnelURL,
 		"last_seen":           time.Now().UTC().Format(time.RFC3339),
 	}
 
 	return c.upsertUser(user)
 }
 
-// UpdateAnswer updates the WebRTC answer for the user
-func (c *Client) UpdateAnswer(answer string) error {
+// ClearTunnelURL clears the WebRTC offer and answer
+func (c *Client) ClearTunnelURL() error {
 	user := map[string]interface{}{
 		"user_id":             c.identity.UserID,
 		"public_identity_key": crypto.EncodeEd25519PublicKey(c.identity.KeyPair.Ed25519Public),
 		"public_enc_key":      crypto.EncodePublicKey(c.identity.KeyPair.X25519Public),
-		"webrtc_offer":        "",
-		"webrtc_answer":       answer,
-		"last_seen":           time.Now().UTC().Format(time.RFC3339),
-	}
-
-	return c.upsertUser(user)
-}
-
-// ClearOffer clears the WebRTC offer and answer
-func (c *Client) ClearOffer() error {
-	user := map[string]interface{}{
-		"user_id":             c.identity.UserID,
-		"public_identity_key": crypto.EncodeEd25519PublicKey(c.identity.KeyPair.Ed25519Public),
-		"public_enc_key":      crypto.EncodePublicKey(c.identity.KeyPair.X25519Public),
-		"webrtc_offer":        "",
-		"webrtc_answer":       "",
+		"tunnel_url":          "",
 		"last_seen":           time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -175,45 +157,7 @@ func (c *Client) GetUser(userID string) (*User, error) {
 	return &users[0], nil
 }
 
-// SetOfferForPeer stores an offer for a specific peer (caller stores offer in callee's record)
-func (c *Client) SetOfferForPeer(peerID, offer string) error {
-	// First, fetch the peer's current record to preserve their keys
-	peer, err := c.GetUser(peerID)
-	if err != nil {
-		return fmt.Errorf("could not fetch peer record: %v", err)
-	}
 
-	user := map[string]interface{}{
-		"user_id":             peerID,
-		"public_identity_key": peer.PublicIdentityKey,
-		"public_enc_key":      peer.PublicEncKey,
-		"webrtc_offer":        offer,
-		"webrtc_answer":       "",
-		"last_seen":           time.Now().UTC().Format(time.RFC3339),
-	}
-
-	return c.upsertUser(user)
-}
-
-// SetAnswerForPeer stores an answer for a specific peer
-func (c *Client) SetAnswerForPeer(peerID, answer string) error {
-	// First, fetch the peer's current record to preserve their keys
-	peer, err := c.GetUser(peerID)
-	if err != nil {
-		return fmt.Errorf("could not fetch peer record: %v", err)
-	}
-
-	user := map[string]interface{}{
-		"user_id":             peerID,
-		"public_identity_key": peer.PublicIdentityKey,
-		"public_enc_key":      peer.PublicEncKey,
-		"webrtc_offer":        "",
-		"webrtc_answer":       answer,
-		"last_seen":           time.Now().UTC().Format(time.RFC3339),
-	}
-
-	return c.upsertUser(user)
-}
 
 func (c *Client) upsertUser(user map[string]interface{}) error {
 	url := fmt.Sprintf("%s/rest/v1/users?on_conflict=user_id", c.baseURL)

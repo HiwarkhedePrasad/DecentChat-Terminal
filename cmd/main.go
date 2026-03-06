@@ -9,9 +9,9 @@ import (
 
 	"decentchat/internal/config"
 	"decentchat/internal/identity"
+	"decentchat/internal/network"
 	"decentchat/internal/signaling"
 	"decentchat/internal/ui"
-	"decentchat/internal/webrtc"
 )
 
 const VERSION = "0.1.0"
@@ -40,14 +40,33 @@ func main() {
 	// Create signaling client
 	sigClient := signaling.NewClient(cfg.SupabaseURL, cfg.SupabaseKey, id)
 
-	// Create WebRTC manager
-	webrtcMgr := webrtc.NewManager(id)
+	// Create network manager
+	networkMgr := network.NewManager(id, cfg.DataDir)
 
-	// Create and run UI
-	app := ui.NewApp(id, sigClient, webrtcMgr, VERSION)
+	// Start the local tunnel server
+	fmt.Println("Starting Cloudflare secure tunnel...")
+	tunnelURL, err := networkMgr.StartServer()
+	if err != nil {
+		fmt.Printf("Failed to start tunnel: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Local tunnel established: %s\n", tunnelURL)
+
+	// Update signaling client with our tunnel URL
+	sigClient.UpdateTunnelURL(tunnelURL)
+
+	// Ensure cleanup on exit
+	defer func() {
+		networkMgr.Shutdown()
+		sigClient.ClearTunnelURL()
+		sigClient.SetOffline(id.UserID)
+	}()
 
 	// Handle shutdown
 	setupShutdownHandler(sigClient, id)
+
+	// Create and run UI
+	app := ui.NewApp(id, sigClient, networkMgr, tunnelURL, VERSION)
 
 	// Run the terminal UI
 	if _, err := app.Run(); err != nil {

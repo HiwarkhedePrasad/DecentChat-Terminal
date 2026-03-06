@@ -9,8 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_id TEXT PRIMARY KEY,
     public_identity_key TEXT NOT NULL,
     public_enc_key TEXT NOT NULL,
-    webrtc_offer TEXT DEFAULT '',
-    webrtc_answer TEXT DEFAULT '',
+    tunnel_url TEXT DEFAULT '',
     online_status BOOLEAN DEFAULT false,
     last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -40,8 +39,7 @@ BEGIN
     UPDATE users
     SET 
         online_status = false,
-        webrtc_offer = '',
-        webrtc_answer = ''
+        tunnel_url = ''
     WHERE 
         online_status = true 
         AND last_seen < NOW() - INTERVAL '2 minutes';
