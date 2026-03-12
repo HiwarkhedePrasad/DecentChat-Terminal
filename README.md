@@ -221,7 +221,7 @@ Building from source is the recommended installation method for users who want t
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/decentchat.git
+git clone https://github.com/hiwarkhedeprasad/DecentChat-Terminal.git
 cd decentchat
 
 # Install dependencies
@@ -240,7 +240,7 @@ For a streamlined installation experience, use the included setup script:
 
 ```bash
 # Clone and run setup script
-git clone https://github.com/yourusername/decentchat.git
+git clone https://github.com/HiwarkhedePrasad/DecentChat-Terminal.git
 cd decentchat
 chmod +x setup.sh
 ./setup.sh
