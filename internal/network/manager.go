@@ -43,11 +43,13 @@ type Manager struct {
 
 	// State
 	mu            sync.Mutex
+	writeMu       sync.Mutex
 	connected     bool
 	tunnelURL     string
 	peerPublicKey [32]byte
 	sharedSecret  [32]byte
 	peerIDKey     []byte // Ed25519 public key for verification
+	keepAliveStop chan struct{}
 
 	// Active connection
 	conn *websocket.Conn
@@ -67,6 +69,8 @@ var upgrader = websocket.Upgrader{
 		return true // Allow all origins for the tunnel
 	},
 }
+
+const keepAliveInterval = 45 * time.Second
 
 // NewManager creates a new network manager
 func NewManager(id *identity.Identity, dataDir string) *Manager {
@@ -125,7 +129,7 @@ func (m *Manager) startCloudflareTunnel(port int) (string, error) {
 	}
 
 	cmd := exec.CommandContext(m.ctx, binaryPath, "tunnel", "--url", fmt.Sprintf("http://127.0.0.1:%d", port))
-	
+
 	// cloudflared writes logs to stderr
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -194,7 +198,7 @@ func (m *Manager) ensureCloudflared() (string, error) {
 
 	// Not found, downloading matching binary
 	fmt.Printf("\nCloudflared binary not found locally or in PATH.\nDownloading for %s-%s... Please wait.\n", osName, arch)
-	
+
 	// Determine download URL
 	var downloadURL string
 	if osName == "windows" && arch == "amd64" {
@@ -233,7 +237,7 @@ func (m *Manager) ensureCloudflared() (string, error) {
 	if _, err := io.Copy(outFile, resp.Body); err != nil {
 		return "", err
 	}
-	
+
 	fmt.Println("Download complete!")
 
 	return binPath, nil
@@ -275,6 +279,7 @@ func (m *Manager) ConnectToPeer(peerID string, peerTunnelURL string, peerEncKeyB
 
 	m.conn = conn
 	m.connected = true
+	m.startKeepAliveLocked()
 
 	// Now we are connected, start reading loop
 	go m.readLoop(conn)
@@ -295,12 +300,12 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// For simplicity in this architecture, we upgrade the connection immediately,
-	// but we don't consider it "fully connected" (i.e. we don't trigger onConnected) 
-	// until the user physically accepts. 
+	// but we don't consider it "fully connected" (i.e. we don't trigger onConnected)
+	// until the user physically accepts.
 	// The plan: UPGRADE IT. Wait for /accept.
 	// Actually, wait. The requirement says User B receives prompt and types /accept.
 	// We can upgrade, but keep it in a "pending" queue, and trigger onIncomingConnection.
-	
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -319,7 +324,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if m.onIncomingConnection != nil {
 		m.onIncomingConnection(peerID)
 	}
-	
+
 	// We do NOT start the read loop until accepted.
 }
 
@@ -346,6 +351,7 @@ func (m *Manager) AcceptConnection(peerEncKeyBase64 string, peerIdKeyBase64 stri
 	m.peerIDKey = peerIDKey
 	m.sharedSecret = crypto.ComputeSharedSecret(m.identity.KeyPair.X25519Private, peerEncKey)
 	m.connected = true
+	m.startKeepAliveLocked()
 
 	go m.readLoop(m.conn)
 
@@ -360,7 +366,7 @@ func (m *Manager) AcceptConnection(peerEncKeyBase64 string, peerIdKeyBase64 stri
 func (m *Manager) DeclineConnection() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.conn != nil && !m.connected {
 		m.conn.Close()
 		m.conn = nil
@@ -443,8 +449,8 @@ func (m *Manager) SendMessage(text string) error {
 		return fmt.Errorf("failed to encrypt message: %w", err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
 	return conn.WriteMessage(websocket.BinaryMessage, encrypted)
 }
 
@@ -457,14 +463,59 @@ func (m *Manager) CloseConnection() {
 		m.conn.Close()
 		m.conn = nil
 	}
-	
+
 	wasConnected := m.connected
 	m.connected = false
+	m.stopKeepAliveLocked()
 	m.sharedSecret = [32]byte{}
 	m.peerPublicKey = [32]byte{}
-	
+
 	if wasConnected && m.onDisconnected != nil {
 		go m.onDisconnected()
+	}
+}
+
+func (m *Manager) startKeepAliveLocked() {
+	m.stopKeepAliveLocked()
+	stop := make(chan struct{})
+	m.keepAliveStop = stop
+	go m.keepAliveLoop(stop)
+}
+
+func (m *Manager) stopKeepAliveLocked() {
+	if m.keepAliveStop != nil {
+		close(m.keepAliveStop)
+		m.keepAliveStop = nil
+	}
+}
+
+func (m *Manager) keepAliveLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			m.mu.Lock()
+			if m.keepAliveStop != stop || !m.connected || m.conn == nil {
+				m.mu.Unlock()
+				return
+			}
+			conn := m.conn
+			m.mu.Unlock()
+
+			m.writeMu.Lock()
+			err := conn.WriteControl(websocket.PingMessage, []byte("keepalive"), time.Now().Add(5*time.Second))
+			m.writeMu.Unlock()
+			if err != nil {
+				m.CloseConnection()
+				return
+			}
+		case <-stop:
+			return
+		case <-m.ctx.Done():
+			return
+		}
 	}
 }
 
@@ -473,11 +524,11 @@ func (m *Manager) Shutdown() {
 	m.CloseConnection()
 
 	m.ctxCancel()
-	
+
 	if m.server != nil {
 		m.server.Close()
 	}
-	
+
 	if m.tunnel != nil && m.tunnel.Process != nil {
 		m.tunnel.Process.Kill()
 	}

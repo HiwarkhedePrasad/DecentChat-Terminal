@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -17,6 +18,10 @@ import (
 const VERSION = "0.1.0"
 
 func main() {
+	if shouldExit, exitCode := handleCLIFlags(); shouldExit {
+		os.Exit(exitCode)
+	}
+
 	// Print banner
 	printBanner()
 
@@ -73,6 +78,45 @@ func main() {
 		fmt.Printf("Error running app: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func handleCLIFlags() (bool, int) {
+	var showHelp bool
+	var showVersion bool
+
+	flag.BoolVar(&showHelp, "help", false, "Show help")
+	flag.BoolVar(&showHelp, "h", false, "Show help")
+	flag.BoolVar(&showVersion, "version", false, "Show version")
+	flag.BoolVar(&showVersion, "v", false, "Show version")
+	flag.Usage = printUsage
+	flag.CommandLine.SetOutput(os.Stdout)
+
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		return true, 2
+	}
+
+	if showHelp {
+		printUsage()
+		return true, 0
+	}
+
+	if showVersion {
+		fmt.Printf("decentchat %s\n", VERSION)
+		return true, 0
+	}
+
+	return false, 0
+}
+
+func printUsage() {
+	fmt.Println("DecentChat - Semi-Decentralized Encrypted Terminal Chat")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  decentchat [flags]")
+	fmt.Println()
+	fmt.Println("Flags:")
+	fmt.Println("  -h, --help      Show help")
+	fmt.Println("  -v, --version   Show version")
 }
 
 func printBanner() {

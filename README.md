@@ -335,6 +335,15 @@ On first launch, DecentChat will:
 
 ## Usage
 
+### CLI Flags
+
+Use these flags before starting the interactive terminal UI:
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `-h`, `--help` | Show CLI help and exit | `decentchat --help` |
+| `-v`, `--version` | Show app version and exit | `decentchat --version` |
+
 ### Commands
 
 DecentChat provides a simple command interface for all operations. Commands are entered at the prompt and provide intuitive control over the application:
