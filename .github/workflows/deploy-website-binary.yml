@@ -1,0 +1,101 @@
+name: Build & Replace Website Binary
+
+# Whenever DecentChat-Terminal's main branch is updated (a push or a
+# manual run), this pipeline:
+#   1. runs go vet / go test
+#   2. compiles the Windows CLI and smoke-tests it
+#   3. replaces decentchat.exe in the DecentChat-Terminal-WEBSITE repo
+#      (Vercel then redeploy https://decentchat-terminal.vercel.app
+#      automatically so `install.ps1` users get the new binary)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-website-binary
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows CLI
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build (Windows amd64)
+        shell: pwsh
+        run: |
+          $sha = git rev-parse --short HEAD
+          go build -trimpath -ldflags "-s -w -X main.Version=$sha" -o decentchat.exe ./cmd
+
+      - name: Smoke test binary
+        shell: pwsh
+        run: |
+          $out = .\decentchat.exe --version
+          Write-Host "Binary reports: $out"
+          $out | Select-String -Pattern "decentchat " -Quiet | ForEach-Object { if (-not $_) { throw "Build produced an unusable binary" } }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: decentchat-windows-amd64
+          path: decentchat.exe
+          if-no-files-found: error
+
+  deploy-website:
+    name: Replace binary on website repo
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout website repo
+        uses: actions/checkout@v4
+        with:
+          repository: HiwarkhedePrasad/DecentChat-Terminal-WEBSITE
+          ref: main
+          token: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+
+      - name: Download built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: decentchat-windows-amd64
+          path: dist
+
+      - name: Replace decentchat.exe
+        shell: pwsh
+        run: |
+          $src = "dist/decentchat.exe"
+          if ((Get-Item $src).Length -lt 1MB) { throw "Built binary looks suspiciously small" }
+          Move-Item -Force $src decentchat.exe
+          Get-FileHash decentchat.exe -Algorithm SHA256 | Format-List
+
+      - name: Commit & push (skips if unchanged)
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add decentchat.exe
+          if (git diff --cached --quiet) {
+            Write-Host "Binary identical to the deployed one — nothing to commit."
+          } else {
+            $sha = "${{ github.sha }}".Substring(0, 7)
+            git commit -m "chore: replace decentchat.exe with build from HiwarkhedePrasad/DecentChat-Terminal@$sha [skip vercel wait]" 
+            git push origin main
+            Write-Host "Pushed new binary; Vercel will redeploy automatically."
+          }

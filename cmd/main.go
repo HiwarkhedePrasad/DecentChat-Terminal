@@ -15,7 +15,9 @@ import (
 	"decentchat/internal/ui"
 )
 
-const VERSION = "0.1.0"
+// VERSION can be overridden at build time with:
+//   go build -ldflags "-X main.Version=<value>" ./cmd
+var VERSION = "0.1.0"
 
 func main() {
 	if shouldExit, exitCode := handleCLIFlags(); shouldExit {
