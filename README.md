@@ -1,9 +1,9 @@
 # DecentChat
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/dl/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Security](https://img.shields.io/badge/Security-E2E%20Encrypted-green.svg)]()
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+[![Security](https://img.shields.io/badge/Security-E2E%20Encrypted-green.svg)](#security)
 
 **Semi-Decentralized Encrypted Terminal Chat**
 
@@ -30,7 +30,7 @@ A privacy-first, terminal-based peer-to-peer messenger with end-to-end encryptio
 
 ## Overview
 
-DecentChat is a CLI application designed for users who prioritize privacy and security in their communications. Unlike traditional messaging applications that rely on centralized servers to store and relay messages, DecentChat uses a semi-decentralized architecture where the central server (Supabase) is only used for signaling—establishing the initial connection between peers. Once connected, all communication flows directly between users via secure tunnels with application-level encryption.
+DecentChat is a CLI application designed for users who prioritize privacy and security in their communications. Unlike traditional messaging applications that rely on centralized servers to store and relay messages, DecentChat uses a semi-decentralized architecture where the central server (Supabase) is only used for signaling—publishing presence and tunnel addresses so peers can find each other. Once connected, all communication flows directly between users through a Cloudflare Tunnel, encrypted at the application level.
 
 ### Why DecentChat?
 
@@ -48,38 +48,31 @@ DecentChat is a CLI application designed for users who prioritize privacy and se
 
 ### End-to-End Encryption
 
-DecentChat implements a robust multi-layer encryption system that ensures your communications remain private and secure. The cryptographic architecture combines multiple industry-standard algorithms to provide comprehensive protection for your messages.
+DecentChat implements a multi-layer encryption system that ensures your communications remain private and secure. The cryptographic architecture combines multiple industry-standard algorithms:
 
-- **X25519 Key Exchange**: Secure Diffie-Hellman key exchange for establishing shared secrets between peers. This elliptic curve cryptography provides strong security with relatively small key sizes, making it ideal for terminal applications where efficiency matters.
-- **AES-256-GCM Encryption**: Symmetric encryption with authenticated encryption for message confidentiality and integrity. The GCM mode provides both encryption and authentication in a single operation, ensuring that messages cannot be tampered with during transit.
-- **Ed25519 Signing**: Every message is digitally signed for authentication and non-repudiation. This ensures that recipients can verify the sender's identity and that the message has not been altered.
+- **X25519 Key Exchange**: Elliptic-curve Diffie-Hellman key exchange to derive a shared secret between the two peers from their published public keys.
+- **AES-256-GCM Encryption**: Authenticated symmetric encryption for message confidentiality and integrity. A unique random nonce is generated for every message.
+- **Ed25519 Signing**: Every message is digitally signed. Recipients verify the signature against the sender's published identity key before accepting a message, preventing forgery.
 
 ### Semi-Decentralized Architecture
 
-The architecture of DecentChat represents a thoughtful balance between decentralization and usability. While fully decentralized systems often struggle with peer discovery and NAT traversal, and centralized systems compromise on privacy, DecentChat's semi-decentralized approach offers the best of both worlds.
-
-- **Signaling Only**: Supabase is used exclusively for connection establishment (presence and offer/answer exchange). The signaling server never sees your messages or encryption keys.
-- **No Message Storage**: Your messages are never stored on any server. They flow directly between peers through encrypted tunnels, leaving no trace on intermediate infrastructure.
-- **Direct P2P**: All communication flows directly between peers via secure tunnels. This eliminates the risk of server-side data breaches affecting your conversations.
-- **Cloudflare Tunnel Integration**: Built-in support for Cloudflare tunnels provides robust NAT traversal without exposing your local network, enabling connections even behind restrictive firewalls.
+- **Signaling Only**: Supabase is used exclusively for presence and connection establishment. Your user row contains only your user ID, public keys, and your (ephemeral) tunnel URL—never your messages or private keys.
+- **No Message Storage**: Your messages are never stored on any server. They flow directly between peers through the encrypted tunnel, leaving no trace on intermediate infrastructure.
+- **Direct P2P**: After the handshake, all communication flows over a single direct WebSocket connection between the two peers.
+- **Cloudflare Quick Tunnel Integration**: DecentChat automatically spawns a `cloudflared` quick tunnel, providing NAT traversal without opening ports or exposing your local network.
 
 ### Privacy-First Design
 
-Privacy is not an afterthought in DecentChat—it is the foundational principle that guides every design decision. From key generation to message transmission, every aspect of the application is designed to minimize data exposure and maximize user control.
-
-- **Local Key Generation**: All cryptographic keys are generated and stored locally on your device. Keys are never transmitted to any server, ensuring that only you have access to your private encryption materials.
-- **Private Keys Never Leave Device**: Your private keys are never transmitted over the network. Even during the initial connection handshake, only public keys are exchanged.
-- **Trust-on-First-Use (TOFU)**: Peer verification model that alerts you if a peer's key changes. This provides protection against man-in-the-middle attacks after the first successful connection.
-- **No Account Required**: Your identity is derived from your cryptographic keys. No email, phone number, or personal information is needed to use DecentChat.
+- **Local Key Generation**: All cryptographic keys are generated and stored locally on your device. Only public keys are ever published to the signaling server.
+- **Private Keys Never Leave Device**: Your private keys are never transmitted over the network.
+- **No Account Required**: Your identity is derived from your Ed25519 public key. No email, phone number, or personal information is needed.
 
 ### Terminal-Native Experience
 
-DecentChat is built from the ground up for terminal users who appreciate the efficiency and flexibility of command-line interfaces. The application leverages modern terminal capabilities while maintaining compatibility across platforms.
-
-- **Clean CLI Interface**: Minimal, distraction-free terminal UI built with BubbleTea. The interface is designed to be intuitive while providing all necessary information at a glance.
-- **No Browser Dependencies**: Pure terminal application that works over SSH. This makes DecentChat ideal for use on remote servers, embedded systems, or any environment where graphical interfaces are unavailable.
-- **Single Binary**: Easy distribution and deployment—just download and run. No complex installation process or dependency management required.
-- **Cross-Platform**: Works on Linux, macOS, and Windows. The application handles platform-specific differences transparently, providing a consistent experience across operating systems.
+- **Clean CLI Interface**: Minimal, distraction-free terminal UI built with BubbleTea.
+- **No Browser Dependencies**: Pure terminal application that works over SSH.
+- **Single Binary**: Easy distribution and deployment—just download and run.
+- **Cross-Platform**: Works on Linux, macOS, and Windows.
 
 ---
 
@@ -96,50 +89,51 @@ DecentChat is built from the ground up for terminal users who appreciate the eff
 │                 │                              │                 │
 │  ┌───────────┐  │                              │  ┌───────────┐  │
 │  │  UI Layer │  │                              │  │  UI Layer │  │
-│  │ (BubbleTea)│ │                              │  │ (BubbleTea)│ │
+│  │(BubbleTea)│  │                              │  │(BubbleTea)│  │
 │  └─────┬─────┘  │                              │  └─────┬─────┘  │
 │        │        │                              │        │        │
-│  ┌─────▼─────┐  │                              │  ┌─────▼─────┐  │
-│  │  Network  │  │      Cloudflare Tunnel       │  │  Network  │  │
-│  │  Manager  │◄─┼──────────────────────────────┼─►│  Manager  │  │
-│  │   (P2P)   │  │      (Encrypted P2P)         │  │   (P2P)   │  │
+│  ┌─────▼─────┐  │      Encrypted WebSocket     │  ┌─────▼─────┐  │
+│  │  Network  │◄─┼──────────────────────────────┼─►│  Network  │  │
+│  │  Manager  │  │    (via Cloudflare Tunnel)   │  │  Manager  │  │
 │  └─────┬─────┘  │                              │  └─────┬─────┘  │
 │        │        │                              │        │        │
 │  ┌─────▼─────┐  │      Signaling Server        │  ┌─────▼─────┐  │
 │  │ Signaling │  │         (Supabase)           │  │ Signaling │  │
 │  │  Client   │◄─┼──────────────────────────────┼─►│  Client   │  │
-│  └───────────┘  │   Presence & Tunnel Exchange │  └───────────┘  │
+│  └───────────┘  │  Presence & tunnel URLs only │  └───────────┘  │
 └─────────────────┘                              └─────────────────┘
 ```
 
 ### Connection Flow
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  User A  │     │ Signaling│     │ Signaling│     │  User B  │
-│          │     │  Server  │     │  Server  │     │          │
-└────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘
-     │                │                │                │
-     │  Register      │                │                │
-     │───────────────►│                │                │
-     │                │  Register      │                │
-     │                │◄───────────────│◄───────────────│
-     │                │                │                │
-     │  Get Online    │                │                │
-     │───────────────►│                │                │
-     │                │  User List     │                │
-     │◄───────────────│                │                │
-     │                │                │                │
-     │  Tunnel URL    │                │                │
-     │───────────────►│  Forward URL   │                │
-     │                │───────────────►│───────────────►│
-     │                │                │                │
-     │                │                │                │
-     │◄═══════════════╳════════════════╳═══════════════►│
-     │         Direct P2P Connection via Tunnel         │
-     │           (Encrypted P2P Chat)                   │
-     │◄═══════════════╳════════════════╳═══════════════►│
+┌──────────┐        ┌──────────────┐        ┌──────────────┐        ┌──────────┐
+│  User A  │        │  Cloudflare  │        │   Supabase   │        │  User B  │
+│ (caller) │        │    Tunnel    │        │  (signaling) │        │ (callee) │
+└────┬─────┘        └──────┬───────┘        └──────┬───────┘        └────┬─────┘
+     │                     │                       │                     │
+     │ Start local server + cloudflared tunnel                     │
+     │────────────────────►│                       │                     │
+     │                     │                       │                     │
+     │ Publish user_id, public keys        Register presence              │
+     │ and tunnel_url ────────────────────────────►│────────────────────►│
+     │                     │                       │                     │
+     │ /list (GetOnlineUsers)                      │                     │
+     │────────────────────────────────────────────►│                     │
+     │                     │                       │                     │
+     │ /connect B: dial wss://<B's tunnel>/ws with X-Peer-ID header      │
+     │────────────────────►│───────────────────────────────────────────►│
+     │                     │                       │                     │
+     │                     │   Connection held as  │                     │
+     │                     │   "pending" until B   │                     │
+     │                     │   types /accept       │                     │
+     │                     │                       │                     │
+     │◄═══════════════════════════════════════════════════════════════►│
+     │         Direct encrypted P2P connection (AES-256-GCM)          │
+     │◄═══════════════════════════════════════════════════════════════►│
 ```
+
+> **Note:** Cloudflare *quick* tunnels (`trycloudflare.com`) are ephemeral—each session gets a new random URL, which is published to Supabase on startup and cleared on exit. If your machine goes offline abruptly, the tunnel URL may remain stale in Supabase for a short time until it is overwritten or cleaned up.
 
 ---
 
@@ -147,18 +141,17 @@ DecentChat is built from the ground up for terminal users who appreciate the eff
 
 ### Encryption Layer
 
-All messages are encrypted at the application level, providing double encryption (application layer + transport layer):
+All messages are encrypted and signed at the application level, on top of the TLS-secured transport (WSS via Cloudflare):
 
 #### 1. Key Exchange (X25519)
 
-The X25519 elliptic curve Diffie-Hellman key exchange provides the foundation for secure session establishment. Each user generates an X25519 keypair on first launch, and these keys are used to derive shared secrets for message encryption.
+Each user generates an X25519 keypair on first launch. The shared secret is derived statically from your private key and the peer's published public key:
 
 ```
 User A                              User B
 --------                            --------
 X25519_Private_A                    X25519_Private_B
-X25519_Public_A  ────────────────►  X25519_Public_A
-X25519_Public_B  ◄────────────────  X25519_Public_B
+X25519_Public_A  ──► Supabase       X25519_Public_B  ──► Supabase
 
 Shared_Secret_A = X25519(X25519_Private_A, X25519_Public_B)
 Shared_Secret_B = X25519(X25519_Private_B, X25519_Public_A)
@@ -167,42 +160,37 @@ Shared_Secret_B = X25519(X25519_Private_B, X25519_Public_A)
 
 #### 2. Message Encryption (AES-256-GCM)
 
-Once a shared secret is established, all messages are encrypted using AES-256-GCM (Galois/Counter Mode). This authenticated encryption algorithm provides both confidentiality and integrity guarantees in a single operation.
-
-- Each message is encrypted with the shared secret derived from X25519
-- A unique nonce is generated for each message to prevent replay attacks
-- Authentication tag ensures message integrity and authenticity
+- Each message is encrypted with the shared secret derived above.
+- A fresh random nonce is generated for every message.
+- The GCM authentication tag protects integrity and authenticity in transit.
 
 #### 3. Message Signing (Ed25519)
 
-In addition to encryption, every message is digitally signed using Ed25519. This provides non-repudiation and allows recipients to verify that messages truly originated from the claimed sender.
-
-- Every message is signed with the sender's Ed25519 private key
-- Recipient verifies the signature before accepting the message
-- Prevents message forgery and ensures authenticity
+- Every message is signed with the sender's Ed25519 private key.
+- The recipient verifies the signature against the sender's published identity key **before decrypting is considered valid**—sender authentication is enforced on every message.
 
 ### Key Storage
 
 ```
 ~/.decentchat/
-├── identity.enc    # Encrypted identity file (X25519 + Ed25519 keys)
-├── .key            # Local encryption key for identity file
-└── trusted_peers   # Known peer public keys (TOFU database)
+├── identity.enc    # AES-256-GCM encrypted identity file (X25519 + Ed25519 keys, trusted_peers)
+├── .key            # Local symmetric key used to encrypt identity.enc (0600 permissions)
+├── trusted_peers   # TOFU database lives inside identity.enc
+└── cloudflared*    # Auto-downloaded cloudflared binary (if not found in PATH)
 ```
 
-The key storage system is designed with multiple layers of protection. Keys are encrypted at rest using a locally-generated key, ensuring that even if an attacker gains access to the filesystem, they cannot decrypt the identity without the local key file.
+- Keys are generated locally on first launch and never leave the device.
+- Identity is backed up simply by copying the `~/.decentchat/` directory to another machine.
 
-- Keys are encrypted at rest with a locally-generated key
-- Private keys are never transmitted over the network
-- Identity can be backed up by copying the `.decentchat` directory
+### Trust Model (Honest Limitations)
 
-### Trust Model (TOFU)
+DecentChat uses **self-certifying identities**: your user ID is the first 16 hex characters of the SHA-256 hash of your Ed25519 public key. Message authenticity is verified on every message, so peers cannot forge messages from someone else's identity. However, be aware of the current limitations:
 
-Trust-on-First-Use (TOFU) is a security model that balances security with usability. It provides protection against man-in-the-middle attacks after the initial connection, while keeping the user experience straightforward.
+- **Key authenticity depends on the signaling server.** Public keys are fetched from Supabase; a malicious actor who can tamper with your row there could swap keys. DecentChat includes a Trust-on-First-Use (TOFU) database (`trusted_peers`) with key-change detection logic built in, but **it is not yet enforced in the connection flow**—this is planned for an upcoming release. Until then, treat the connection as secure against passive eavesdropping, not against an active signaling-server MITM.
+- **No forward secrecy yet.** The session key is derived statically from long-lived X25519 keys, so compromise of the private keys would compromise past sessions. Ephemeral key exchange is on the roadmap.
+- **No replay protection yet.** Message timestamps are included but not currently validated.
 
-1. **First Connection**: When connecting to a peer for the first time, their public key is stored locally in the trusted_peers database
-2. **Subsequent Connections**: The peer's key is verified against the stored key to ensure consistency
-3. **Key Change Alert**: If a peer's key changes, you receive a warning about potential man-in-the-middle attack
+We document these limitations rather than hide them. Contributions in these areas are very welcome.
 
 ---
 
@@ -214,15 +202,16 @@ Before installing DecentChat, ensure you have the following prerequisites in pla
 
 - **Go 1.21+**: Required for building from source. You can download Go from [golang.org/dl](https://golang.org/dl/)
 - **Supabase Account**: Free tier works perfectly for signaling. Sign up at [supabase.com](https://supabase.com)
+- **Internet access**: Needed the first time to auto-download `cloudflared` (the binary is cached in `~/.decentchat/`)
+
+> `cloudflared` is auto-downloaded at runtime for Windows (amd64) and Linux (amd64/arm64). On macOS, or for any other platform, install `cloudflared` manually first (e.g. `brew install cloudflared`)—DecentChat will use it from your `PATH`.
 
 ### Option 1: Build from Source
 
-Building from source is the recommended installation method for users who want the most control over their installation:
-
 ```bash
 # Clone the repository
-git clone https://github.com/hiwarkhedeprasad/DecentChat-Terminal.git
-cd decentchat
+git clone https://github.com/HiwarkhedePrasad/DecentChat-Terminal.git
+cd DecentChat-Terminal
 
 # Install dependencies
 go mod tidy
@@ -236,21 +225,18 @@ go build -o decentchat ./cmd
 
 ### Option 2: Quick Setup Script
 
-For a streamlined installation experience, use the included setup script:
+For a streamlined installation experience on Unix-like systems, use the included setup script:
 
 ```bash
-# Clone and run setup script
 git clone https://github.com/HiwarkhedePrasad/DecentChat-Terminal.git
-cd decentchat
+cd DecentChat-Terminal
 chmod +x setup.sh
 ./setup.sh
 ```
 
-The setup script will check for Go installation, verify environment variables, download dependencies, and build the application automatically.
+The setup script checks for Go, verifies environment variables, downloads dependencies, and builds the application automatically.
 
 ### Option 3: Cross-Compile for Different Platforms
-
-DecentChat supports cross-compilation for various platforms. Use these commands to build for specific target platforms:
 
 ```bash
 # Linux (amd64)
@@ -271,7 +257,6 @@ GOOS=windows GOARCH=amd64 go build -o decentchat.exe ./cmd
 For Windows users, a PowerShell build script is provided that automatically embeds credentials:
 
 ```powershell
-# Run the build script
 .\build.ps1
 ```
 
@@ -283,29 +268,25 @@ This script loads environment variables from `.env` and builds an executable wit
 
 ### 1. Set Up Supabase
 
-Create a free Supabase project and configure the database schema for signaling:
+Create a free Supabase project and run the schema from [`supabase/schema.sql`](supabase/schema.sql) in the Supabase SQL Editor. The essential part:
 
 ```sql
--- Run this in Supabase SQL Editor
--- See supabase/schema.sql for complete schema
+-- See supabase/schema.sql for the complete schema (RLS policies, cleanup helpers)
 
-CREATE TABLE users (
-    id TEXT PRIMARY KEY,
-    public_key TEXT NOT NULL,
-    online BOOLEAN DEFAULT false,
-    tunnel_url TEXT,
-    last_seen TIMESTAMP WITH TIME ZONE
-);
-
-CREATE TABLE signals (
-    id SERIAL PRIMARY KEY,
-    from_user TEXT NOT NULL,
-    to_user TEXT NOT NULL,
-    type TEXT NOT NULL, -- 'offer' or 'answer'
-    sdp TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    public_identity_key TEXT NOT NULL,
+    public_enc_key TEXT NOT NULL,
+    tunnel_url TEXT DEFAULT '',
+    online_status BOOLEAN DEFAULT false,
+    last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 ```
+
+**Important:** the schema's RLS policies intentionally allow public read/write so that a Supabase anon key is sufficient for signaling. This is fine for DecentChat's threat model because only *public* keys and tunnel URLs are stored—but it also means anyone can register or overwrite rows on your project. Use your own Supabase project and share it only with the people you chat with.
+
+Optionally, enable the `pg_cron` extension and uncomment the `cron.schedule(...)` line in the schema to automatically mark idle users as offline (rows older than 2 minutes).
 
 ### 2. Configure Environment
 
@@ -316,7 +297,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-anon-key
 ```
 
-You can find these values in your Supabase dashboard under **Project Settings → API**.
+You can find these values in your Supabase dashboard under **Project Settings → API**. DecentChat reads `SUPABASE_URL` and `SUPABASE_KEY` from environment variables or a `.env` file in the current directory.
 
 ### 3. Run DecentChat
 
@@ -326,10 +307,10 @@ You can find these values in your Supabase dashboard under **Project Settings �
 
 On first launch, DecentChat will:
 1. Generate your cryptographic keypairs (X25519 + Ed25519)
-2. Store encrypted keys in `~/.decentchat/`
+2. Store the encrypted identity in `~/.decentchat/`
 3. Derive your user ID from your public key
-4. Establish a Cloudflare tunnel for P2P connectivity
-5. Register with the signaling server
+4. Start a local WebSocket server and establish a Cloudflare quick tunnel
+5. Register with the signaling server, publishing your tunnel URL and public keys
 
 ---
 
@@ -346,19 +327,21 @@ Use these flags before starting the interactive terminal UI:
 
 ### Commands
 
-DecentChat provides a simple command interface for all operations. Commands are entered at the prompt and provide intuitive control over the application:
+DecentChat provides a simple command interface. Commands are typed at the prompt:
 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/list` | Show all online users | `/list` |
-| `/connect <id>` | Initiate connection to a peer | `/connect b7e2c45f` |
+| `/connect <id>` | Dial a peer's tunnel and send a connection request | `/connect a94f3d21` |
 | `/disconnect` | End current connection | `/disconnect` |
-| `/accept` | Accept incoming connection request | `/accept` |
-| `/decline` | Decline incoming connection request | `/decline` |
+| `/accept` | Accept an incoming connection request | `/accept` |
+| `/decline` | Decline an incoming connection request | `/decline` |
 | `/status` | Show connection status | `/status` |
 | `/clear` | Clear chat messages from screen | `/clear` |
 | `/help` | Display available commands | `/help` |
-| `/exit` | Quit the application | `/exit` |
+| `/exit`, `/quit` | Quit the application | `/exit` |
+
+You can only be connected to one peer at a time (use `/disconnect` first to switch peers). Incoming connections are held as "pending" until you `/accept` or `/decline` them.
 
 ### Example Session
 
@@ -371,12 +354,12 @@ DecentChat provides a simple command interface for all operations. Commands are 
 ╚═════╝ ╚══════╝╚══════╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝
 
 Version 0.1.0 - Semi-Decentralized Encrypted Terminal Chat
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 User ID: a94f3d21
 Initializing...
 Starting Cloudflare secure tunnel...
-Local tunnel established: https://example-try-cloudflare.com
+Local tunnel established: wss://example-random-words.trycloudflare.com/ws
 
 [System] Registered with signaling server
 [System] Status: Online
@@ -389,9 +372,7 @@ Local tunnel established: https://example-try-cloudflare.com
 
 > /connect b7e2c45f
 [System] Connecting to b7e2c45f...
-[System] Offer sent. Waiting for peer to answer...
-✓ Connected to peer: b7e2c45f
-[System] Secure channel established with E2E encryption
+✓ Connected to b7e2c45f - you can now chat securely
 
 [You] Hey! How's it going?
 [Peer] Hi! Everything's great. Loving this encrypted chat!
@@ -402,7 +383,6 @@ Local tunnel established: https://example-try-cloudflare.com
 [System] Disconnected from peer
 
 > /exit
-[System] Setting offline status...
 [System] Goodbye!
 ```
 
@@ -412,25 +392,23 @@ Local tunnel established: https://example-try-cloudflare.com
 
 ### Technology Stack
 
-The technology choices in DecentChat reflect a commitment to security, performance, and maintainability:
-
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **Language** | Go 1.21+ | Core application - chosen for its performance, simplicity, and excellent cryptography support |
-| **Terminal UI** | BubbleTea | Interactive CLI interface - provides a reactive, Elm-inspired architecture for terminal applications |
-| **Styling** | Lipgloss | Terminal styling - enables rich formatting and layout in terminal applications |
-| **Cryptography** | golang.org/x/crypto | Encryption primitives - provides well-audited implementations of X25519, Ed25519, and AES-GCM |
-| **WebSocket** | gorilla/websocket | Real-time communication - enables persistent connections for signaling |
-| **Signaling** | Supabase | Connection establishment - provides a reliable, scalable backend for peer discovery |
-| **NAT Traversal** | Cloudflare Tunnel | Network accessibility - bypasses NAT and firewall restrictions |
+| **Language** | Go 1.21+ | Core application - performance, simplicity, excellent cryptography support |
+| **Terminal UI** | BubbleTea | Interactive CLI interface with a reactive, Elm-inspired architecture |
+| **Styling** | Lipgloss | Terminal styling and layout |
+| **Cryptography** | golang.org/x/crypto + stdlib | X25519 key exchange, Ed25519 signing, AES-256-GCM message encryption |
+| **WebSocket (P2P)** | gorilla/websocket | The direct encrypted peer-to-peer connection over the tunnel |
+| **Signaling** | Supabase REST API | Presence, public key and tunnel URL publishing (plain HTTP calls) |
+| **NAT Traversal** | Cloudflare Quick Tunnel | Ephemeral public endpoint for inbound peer connections |
 
 ### Network Communication
 
 DecentChat uses a hybrid approach to network communication:
 
-- **Cloudflare Tunnel**: Automatically creates a secure tunnel for inbound connections, enabling P2P connectivity even behind NATs and firewalls
-- **WebSocket Protocol**: Used for real-time bidirectional communication between peers
-- **HTTP REST API**: Used for signaling operations with Supabase
+- **Cloudflare Quick Tunnel**: `cloudflared` is spawned automatically (downloaded to `~/.decentchat/` if not present in your `PATH`) and exposes the local WebSocket server at a random `*.trycloudflare.com` URL. The URL is scraped from `cloudflared` logs and published to Supabase.
+- **WebSocket Protocol**: The transport for chat traffic. The caller sends its user ID in an `X-Peer-ID` header during the handshake; the receiver holds the connection pending until the user accepts.
+- **HTTP REST API**: Used for all signaling operations with Supabase (user upserts and queries).
 
 ### Session Lifecycle
 
@@ -445,15 +423,17 @@ DecentChat uses a hybrid approach to network communication:
          │
          ▼
     ┌──────────┐     ┌──────────────┐     ┌───────────────┐
-    │ Register │────►│  Set Online  │────►│ Poll Signals  │
-    │   with   │     │    Status    │     │   (offers)    │
-    │Signaling │     └──────────────┘     └───────┬───────┘
-    └──────────┘                                  │
+    │ Register │────►│  Set Online  │────►│  Poll Signals │
+    │   with   │     │    Status    │     │  (UI presence │
+    │Signaling │     └──────────────┘     │    polling)   │
+    └──────────┘                          └───────┬───────┘
+                                                  │
                                                   ▼
                                            ┌───────────────┐
                                            │    P2P        │
                                            │  Connection   │
                                            │  via Tunnel   │
+                                           │  (encrypted)  │
                                            └───────────────┘
                                                   │
     ┌──────────┐                                  │
@@ -462,14 +442,13 @@ DecentChat uses a hybrid approach to network communication:
          │
          ▼
     ┌──────────────┐     ┌──────────────┐
-    │    Clear     │────►│    Exit      │
-    │   Signals    │     │              │
+    │  Clear       │────►│    Exit      │
+    │  tunnel URL  │     │  (set        │
+    │  + go offline│     │   offline)   │
     └──────────────┘     └──────────────┘
 ```
 
 ### Build Options
-
-Different build configurations are available for various use cases:
 
 ```bash
 # Debug build (with symbols for debugging)
@@ -489,9 +468,9 @@ go build -ldflags="-X main.Version=$(git describe --tags)" -o decentchat ./cmd
 The project follows Go conventions for project layout, with a clear separation of concerns:
 
 ```
-decentchat/
+DecentChat-Terminal/
 ├── cmd/
-│   └── main.go              # Application entry point, banner, initialization
+│   └── main.go              # Application entry point, banner, CLI flags, shutdown handling
 │
 ├── internal/
 │   ├── config/
@@ -501,10 +480,11 @@ decentchat/
 │   │   └── crypto.go        # X25519, Ed25519, AES-256-GCM operations
 │   │
 │   ├── identity/
-│   │   └── identity.go      # Identity management, key storage, TOFU
+│   │   └── identity.go      # Identity management, encrypted key storage, TOFU helpers
 │   │
 │   ├── network/
-│   │   └── manager.go       # Network manager, tunnel management, P2P connections
+│   │   └── manager.go       # WebSocket server/dialer, cloudflared management,
+│   │                        # encryption/signing pipeline, keepalive pings
 │   │
 │   ├── signaling/
 │   │   └── client.go        # Supabase REST API client for signaling
@@ -513,9 +493,9 @@ decentchat/
 │       └── app.go           # BubbleTea terminal UI, commands, message display
 │
 ├── supabase/
-│   └── schema.sql           # Database schema for signaling server
+│   └── schema.sql           # Database schema for signaling server (users table, RLS)
 │
-├── .env                     # Environment configuration (not in repo)
+├── .env                     # Environment configuration (not committed)
 ├── go.mod                   # Go module definition
 ├── go.sum                   # Dependency checksums
 ├── setup.sh                 # Quick setup script for Unix-like systems
@@ -525,16 +505,16 @@ decentchat/
 
 ### Module Responsibilities
 
-Each module has a clearly defined responsibility, making the codebase maintainable and testable:
+Each module has a clearly defined responsibility:
 
 | Module | Responsibility |
 |--------|----------------|
-| `cmd` | Application bootstrap, banner display, graceful shutdown handling |
+| `cmd` | Application bootstrap, banner display, CLI flags, graceful shutdown handling |
 | `config` | Environment loading, .env file parsing, configuration defaults |
 | `crypto` | All cryptographic operations (key generation, encryption, signing, verification) |
-| `identity` | User identity management, local key storage, trusted peers database |
-| `network` | Network operations, Cloudflare tunnel management, P2P connection handling |
-| `signaling` | Communication with Supabase for peer discovery and connection establishment |
+| `identity` | User identity management, local encrypted key storage, trusted peers database |
+| `network` | WebSocket server/dialer, Cloudflare tunnel management, encrypted connection handling |
+| `signaling` | Communication with Supabase for presence and connection establishment |
 | `ui` | Terminal user interface, command processing, message display, user interactions |
 
 ---
@@ -543,28 +523,27 @@ Each module has a clearly defined responsibility, making the codebase maintainab
 
 ### Current Version (v0.1.0)
 
-The current release provides a solid foundation for secure P2P messaging:
-
-- ✅ End-to-end encrypted P2P messaging
-- ✅ Cloudflare tunnel integration for NAT traversal
+- ✅ End-to-end encrypted P2P messaging (X25519 + AES-256-GCM + Ed25519 signatures)
+- ✅ Automatic Cloudflare quick tunnel integration for NAT traversal (with cloudflared auto-download)
 - ✅ Terminal UI with BubbleTea
-- ✅ Single peer-to-peer connections
-- ✅ Trust-on-first-use (TOFU) security model
+- ✅ Single peer-to-peer connections with accept/decline flow
 - ✅ Cross-platform support (Linux, macOS, Windows)
+- ✅ Local encrypted identity storage
 
 ### Planned Features
 
-Future releases will expand DecentChat's capabilities while maintaining the core focus on privacy and security:
-
 | Feature | Status | Description |
 |---------|--------|-------------|
+| TOFU Enforcement | 🔜 Planned | Wire the existing trusted-peers database into the connection flow, with key-change (possible MITM) alerts |
 | Group Chat | 🔜 Planned | Multi-peer mesh network for group conversations |
 | File Transfer | 🔜 Planned | Secure file sharing over encrypted P2P connections |
 | Message History | 🔜 Planned | Local encrypted message history with export functionality |
 | Multi-Connection | 🔜 Planned | Multiple simultaneous peer connections |
 | Delivery Receipts | 🔜 Planned | Message delivery and read confirmations |
 | Offline Queue | 🔜 Planned | Store messages for offline peers |
-| Custom TURN Support | 🔜 Planned | Support for custom TURN servers in restrictive networks |
+| Forward Secrecy | 🔜 Planned | Ephemeral session key exchange (X25519 handshake with one-time keys) |
+| Replay Protection | 🔜 Planned | Validate message timestamps / nonces to reject replayed messages |
+| Custom TURN Support | 📋 Future | Support for custom TURN servers in restrictive networks |
 | Voice Messages | 📋 Future | Audio message recording and playback |
 | Plugin System | 📋 Future | Extensible plugin architecture for custom functionality |
 
@@ -596,13 +575,13 @@ To maintain code quality and consistency, please follow these guidelines:
 
 ### Security Issues
 
-If you discover a security vulnerability, please **do not** open a public issue. Instead, email security@example.com with details. We take security seriously and will respond promptly to all security reports.
+If you discover a security vulnerability, please **do not** open a public issue. Instead, contact the maintainer privately via the contact details on [the maintainer's GitHub profile](https://github.com/HiwarkhedePrasad). We take security seriously and will respond promptly to all security reports.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License:
 
 ```
 MIT License
