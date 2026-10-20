@@ -2,6 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,13 +37,24 @@ type Model struct {
 	ready           bool
 
 	// Modes
-	mode string // "normal", "connecting", "chat", "waiting"
+	mode string // "normal", "connecting", "chat", "waiting", "saveas"
 
 	// For incoming connections
-	pendingPeerID   string
+	pendingPeerID string
 
 	// Poll ticker
-	lastPollTime    time.Time
+	lastPollTime time.Time
+
+	// File transfer state
+	fileDropTags    map[string]string              // staged send: tag ("FILE1") -> local path
+	receivedFiles   map[string]network.FileResult  // fileID -> received file info (clickable)
+	fileTags        map[string]string              // fileID -> display tag ("FILEn")
+	activeTransfers map[string]string              // fileID -> one-line progress text
+	savedPaths      map[string]string              // fileID -> user-chosen save destination
+	fileMsgLines    map[int]string                 // message index -> fileID (clickable lines)
+	rowToMsg        *map[int]int                   // screen row -> message index (built while rendering)
+	fileCounter     int
+	fileMenuID      string // received-file menu is open for this fileID ("", closed)
 }
 
 // Styles
@@ -67,17 +84,26 @@ var (
 
 	commandStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#666666"))
+
+	fileMenuStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFB000"))
 )
 
 // Messages for tea
 type (
-	statusMsg      string
-	errorMsg       string
-	peerMsg        string
-	connectedMsg   struct{ peerID string }
+	statusMsg       string
+	errorMsg        string
+	peerMsg         string
+	connectedMsg    struct{ peerID string }
 	disconnectedMsg struct{}
-	incomingMsg    struct{ peerID string }
-	pollMsg        struct{}
+	incomingMsg     struct{ peerID string }
+	pollMsg         struct{}
+
+	// File transfer messages
+	fileOfferMsg    struct{ offer network.FileOfferInfo }
+	fileProgressMsg struct{ update network.FileProgress }
+	fileDoneMsg     struct{ result network.FileResult }
 )
 
 // NewApp creates a new application
@@ -91,9 +117,18 @@ func NewApp(id *identity.Identity, sigClient *signaling.Client, networkMgr *netw
 		messages:        make([]string, 0),
 		status:          "Online",
 		mode:            "normal",
+		fileDropTags:    make(map[string]string),
+		receivedFiles:   make(map[string]network.FileResult),
+		fileTags:        make(map[string]string),
+		activeTransfers: make(map[string]string),
+		savedPaths:      make(map[string]string),
+		fileMsgLines:    make(map[int]string),
 	}
+	rowToMsg := make(map[int]int)
+	m.rowToMsg = &rowToMsg
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	// Enable mouse events so received files can be clicked for save options
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Set up Network callbacks to send messages to the bubbletea program
 	networkMgr.SetCallbacks(
@@ -108,6 +143,19 @@ func NewApp(id *identity.Identity, sigClient *signaling.Client, networkMgr *netw
 		},
 		func(peerID string) {
 			p.Send(incomingMsg{peerID: peerID})
+		},
+	)
+
+	// File-transfer callbacks
+	networkMgr.SetFileCallbacks(
+		func(offer network.FileOfferInfo) {
+			p.Send(fileOfferMsg{offer: offer})
+		},
+		func(update network.FileProgress) {
+			p.Send(fileProgressMsg{update: update})
+		},
+		func(result network.FileResult) {
+			p.Send(fileDoneMsg{result: result})
 		},
 	)
 
@@ -126,6 +174,27 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Received-file menu is open: s = Save As, o = open folder.
+		// Any other key dismisses the menu and is processed normally.
+		if m.fileMenuID != "" && m.mode != "saveas" {
+			switch strings.ToLower(msg.String()) {
+			case "s":
+				if entry, ok := m.receivedFiles[m.fileMenuID]; ok {
+					m.mode = "saveas"
+					m.input = m.defaultSavePath(entry.Name)
+				}
+				return m, nil
+			case "o":
+				m.openReceivedFolder(m.fileMenuID)
+				return m, nil
+			case "esc":
+				m.fileMenuID = ""
+				return m, nil
+			default:
+				m.fileMenuID = ""
+			}
+		}
+
 		switch msg.Type {
 		case tea.KeyEnter:
 			return m.handleInput()
@@ -137,18 +206,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input = m.input[:len(m.input)-1]
 			}
 		case tea.KeyEsc:
+			if m.mode == "saveas" {
+				// Cancel save but return to the file menu
+				m.mode = m.restoreMode()
+				m.input = ""
+				return m, nil
+			}
+			if m.fileMenuID != "" {
+				m.fileMenuID = ""
+				return m, nil
+			}
 			if m.mode == "waiting" {
 				m.mode = "normal"
 				m.messages = append(m.messages, systemStyle.Render("[System] Cancelled"))
 			}
 		default:
 			m.input += string(msg.Runes)
+			// Catch dropped/pasted file paths and replace them with [FILEn]
+			m.captureFilePaths()
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			m.handleFileClick(msg.Y)
+		}
 
 	case statusMsg:
 		m.messages = append(m.messages, systemStyle.Render("[System] ")+string(msg))
@@ -199,6 +285,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			checkForOffers(&m),
 			pollForUpdates(m.signalingClient, m.identity.UserID),
 		)
+
+	case fileOfferMsg:
+		tag := m.tagForFile(msg.offer.FileID)
+		m.activeTransfers[msg.offer.FileID] = fmt.Sprintf("Receiving %s 0%%", tag)
+
+	case fileProgressMsg:
+		tag := m.tagForFile(msg.update.FileID)
+		direction := "Receiving"
+		if msg.update.Outgoing {
+			direction = "Sending"
+		}
+		pct := 0
+		if msg.update.Total > 0 {
+			pct = int(100 * msg.update.Sent / msg.update.Total)
+		}
+		if msg.update.Sent >= msg.update.Total {
+			pct = 100
+		}
+		kb := msg.update.Sent / 1024
+		totalKB := msg.update.Total / 1024
+		m.activeTransfers[msg.update.FileID] = fmt.Sprintf("%s %s %d/%d KB (%d%%)", direction, tag, kb, totalKB, pct)
+
+	case fileDoneMsg:
+		r := msg.result
+		delete(m.activeTransfers, r.FileID)
+
+		if r.Outgoing {
+			tag := m.tagForFile(r.FileID)
+			if r.OK {
+				m.messages = append(m.messages, successStyle.Render(fmt.Sprintf("[You] ✓ File sent %s", tag)))
+				delete(m.fileDropTags, tag)
+			} else {
+				m.messages = append(m.messages, errorStyle.Render(fmt.Sprintf("[Error] Sending %s failed: %s", tag, r.Message)))
+			}
+		} else {
+			tag := m.tagForFile(r.FileID)
+			if r.OK {
+				m.receivedFiles[r.FileID] = r
+				idx := len(m.messages)
+				m.messages = append(m.messages, successStyle.Render(
+					fmt.Sprintf("📄 [%s] File %s received — click this line to save it", tag, r.Name)))
+				m.fileMsgLines[idx] = r.FileID
+			} else {
+				m.messages = append(m.messages, errorStyle.Render(fmt.Sprintf("[Error] Receiving %s failed: %s", tag, r.Message)))
+				delete(m.receivedFiles, r.FileID)
+				delete(m.savedPaths, r.FileID)
+			}
+		}
 	}
 
 	return m, nil
@@ -209,6 +343,11 @@ func (m Model) View() string {
 	if !m.ready {
 		return "Loading..."
 	}
+
+	// Rebuild the screen-row -> message-index map for mouse clicks
+	rowToMsg := make(map[int]int)
+	*m.rowToMsg = rowToMsg
+	row := 0
 
 	var b strings.Builder
 
@@ -235,13 +374,24 @@ func (m Model) View() string {
 	}
 
 	for i := start; i < len(m.messages); i++ {
+		rowToMsg[row] = i
 		b.WriteString(m.messages[i])
 		b.WriteString("\n")
+		row += 1 + strings.Count(m.messages[i], "\n")
 	}
 
 	// Fill remaining space
 	for i := len(m.messages) - start; i < visibleLines; i++ {
 		b.WriteString("\n")
+	}
+
+	// Received-file menu bar
+	if m.fileMenuID != "" {
+		if tag, ok := m.fileTags[m.fileMenuID]; ok {
+			b.WriteString(fileMenuStyle.Render(
+				fmt.Sprintf("  [%s] (s) Save As…   (o) Open Folder   (Esc) dismiss", tag)))
+			b.WriteString("\n\n")
+		}
 	}
 
 	// Input area
@@ -272,12 +422,25 @@ func (m Model) renderHeader() string {
 		sb.WriteString(fmt.Sprintf("Status: %s", m.status))
 	}
 
+	// Live file-transfer progress (chat stays usable while files flow)
+	if len(m.activeTransfers) > 0 {
+		texts := make([]string, 0, len(m.activeTransfers))
+		for _, t := range m.activeTransfers {
+			texts = append(texts, t)
+		}
+		sb.WriteString(" │ ")
+		sb.WriteString(statusStyle.Render(strings.Join(texts, " · ")))
+	}
+
 	return sb.String()
 }
 
 func (m Model) renderCommands() string {
+	if m.mode == "saveas" {
+		return commandStyle.Render("Enter to save · Esc to cancel")
+	}
 	if m.mode == "chat" {
-		return commandStyle.Render("Type message to send | /disconnect | /exit")
+		return commandStyle.Render("Type message | Drop file to send | /disconnect | /exit")
 	}
 	if m.mode == "waiting" {
 		return commandStyle.Render("/accept | /decline")
@@ -294,6 +457,8 @@ func (m Model) renderInput() string {
 		prompt = "[waiting] "
 	case "connecting":
 		prompt = "[connecting] "
+	case "saveas":
+		prompt = "[save-as] "
 	default:
 		prompt = ""
 	}
@@ -308,18 +473,26 @@ func (m *Model) handleInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Save-As prompt takes over the input line while active
+	if m.mode == "saveas" {
+		m.completeSaveAs(input)
+		return m, nil
+	}
+
 	// Handle commands
 	if strings.HasPrefix(input, "/") {
 		return m.handleCommand(input)
 	}
 
+	// Staged files ([FILEn]) on the input line?
+	if fileTagRe.MatchString(input) {
+		m.sendInputWithFiles(input)
+		return m, nil
+	}
+
 	// If in chat mode, send message
 	if m.mode == "chat" && m.connectedPeer != "" {
-		if err := m.networkManager.SendMessage(input); err != nil {
-			m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
-		} else {
-			m.messages = append(m.messages, successStyle.Render("[You] ")+input)
-		}
+		m.sendChat(input)
 		return m, nil
 	}
 
@@ -364,6 +537,8 @@ func (m *Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, "  /accept        - Accept incoming connection")
 		m.messages = append(m.messages, "  /decline       - Decline incoming connection")
 		m.messages = append(m.messages, "  /exit          - Quit the application")
+		m.messages = append(m.messages, "  Files: drop a file into the terminal — it shows as [FILEn];")
+		m.messages = append(m.messages, "  press Enter to send it. Click a received 📄 line to save it.")
 		return m, nil
 
 	case "/status":
@@ -376,6 +551,7 @@ func (m *Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 
 	case "/clear":
 		m.messages = make([]string, 0)
+		m.fileMsgLines = make(map[int]string)
 		return m, nil
 
 	default:
@@ -524,6 +700,267 @@ func (m *Model) declineConnection() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ---- File drop capture & sending ----
+
+var (
+	winQuotedRe  = regexp.MustCompile(`"([A-Za-z]:\\[^"\r\n\v]+)"`)
+	winPathRe    = regexp.MustCompile(`[A-Za-z]:\\[^\s"]+`)
+	unixQuotedRe = regexp.MustCompile(`"(/[^"\r\n]+)"`)
+	unixPathRe   = regexp.MustCompile(`/[^\s"]{2,}`)
+	fileTagRe    = regexp.MustCompile(`\[FILE(\d+)\]`)
+)
+
+// captureFilePaths scans the input line for pasted/dropped file paths and
+// replaces them with [FILEn] placeholders. Real paths staged for sending;
+// ordinary text (where the "path" doesn't exist locally) is left alone.
+func (m *Model) captureFilePaths() {
+	mutate := func(re *regexp.Regexp) {
+		m.input = re.ReplaceAllStringFunc(m.input, func(match string) string {
+			candidate := strings.Trim(match, `"`+" ")
+			if tag := m.stageFile(candidate); tag != "" {
+				return tag
+			}
+			return match
+		})
+	}
+
+	// Quoted paths first (handles paths containing spaces)
+	mutate(winQuotedRe)
+	mutate(unixQuotedRe)
+	// Unquoted paths
+	mutate(winPathRe)
+	mutate(unixPathRe)
+}
+
+// stageFile adds or re-uses a placeholder tag if raw points to an existing
+// local file. Returns "" when raw is not a real file.
+func (m *Model) stageFile(raw string) string {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return ""
+	}
+	info, err := os.Stat(p)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+
+	// Re-use the same placeholder if this file is already staged
+	for tag, existing := range m.fileDropTags {
+		if existing == p {
+			return "[" + tag + "]"
+		}
+	}
+
+	m.fileCounter++
+	tag := fmt.Sprintf("FILE%d", m.fileCounter)
+	m.fileDropTags[tag] = p
+	return "[" + tag + "]"
+}
+
+// sendInputWithFiles splits an input line into chat text and staged files,
+// sends the text as a chat message, and transfers each staged file.
+func (m *Model) sendInputWithFiles(input string) {
+	if m.connectedPeer == "" {
+		m.messages = append(m.messages,
+			systemStyle.Render("[System] Not connected — files stay staged. Use /connect first."))
+		return
+	}
+
+	tags := fileTagRe.FindAllString(input, -1)
+	remainder := strings.TrimSpace(
+		strings.Join(strings.Fields(fileTagRe.ReplaceAllString(input, "")), " "))
+
+	if remainder != "" {
+		m.sendChat(remainder)
+	}
+
+	for _, tag := range tags {
+		m.sendStagedFile(tag)
+	}
+}
+
+func (m *Model) sendChat(text string) {
+	if err := m.networkManager.SendMessage(text); err != nil {
+		m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
+	} else {
+		m.messages = append(m.messages, successStyle.Render("[You] ")+text)
+	}
+}
+
+func (m *Model) sendStagedFile(tag string) {
+	key := strings.Trim(tag, "[]")
+	path, ok := m.fileDropTags[key]
+	if !ok {
+		m.messages = append(m.messages,
+			systemStyle.Render(fmt.Sprintf("[System] %s is not a staged file", tag)))
+		return
+	}
+
+	offer, err := m.networkManager.SendFile(path)
+	if err != nil {
+		m.messages = append(m.messages, errorStyle.Render("[Error] ")+err.Error())
+		return
+	}
+
+	m.fileTags[offer.FileID] = key
+	m.activeTransfers[offer.FileID] = fmt.Sprintf("Sending %s 0%%", key)
+	m.messages = append(m.messages, successStyle.Render(fmt.Sprintf("[You] Sending %s…", tag)))
+}
+
+// tagForFile returns (creating if needed) the display tag for a file ID.
+func (m *Model) tagForFile(fileID string) string {
+	if tag, ok := m.fileTags[fileID]; ok {
+		return tag
+	}
+	m.fileCounter++
+	tag := fmt.Sprintf("FILE%d", m.fileCounter)
+	m.fileTags[fileID] = tag
+	return tag
+}
+
+// ---- Received-file click menu ----
+
+// handleFileClick maps a screen row to a message line and opens the file
+// menu when the line is a received file.
+func (m *Model) handleFileClick(row int) {
+	if m.mode == "saveas" {
+		return
+	}
+
+	idx, ok := (*m.rowToMsg)[row]
+	if !ok {
+		// Clicking anywhere outside a message line dismisses the menu
+		if m.fileMenuID != "" {
+			m.fileMenuID = ""
+		}
+		return
+	}
+
+	if fileID, ok := m.fileMsgLines[idx]; ok {
+		m.fileMenuID = fileID
+	} else {
+		m.fileMenuID = ""
+	}
+}
+
+// defaultSavePath suggests a sensible destination under ~/Downloads/DecentChat
+func (m *Model) defaultSavePath(name string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return name
+	}
+	dir := filepath.Join(home, "Downloads", "DecentChat")
+	_ = os.MkdirAll(dir, 0755)
+	return filepath.Join(dir, name)
+}
+
+// completeSaveAs copies the received (spooled) file to the user-chosen path.
+func (m *Model) completeSaveAs(destInput string) {
+	m.mode = m.restoreMode()
+	m.input = ""
+
+	id := m.fileMenuID
+	entry, ok := m.receivedFiles[id]
+	if !ok {
+		m.messages = append(m.messages, systemStyle.Render("[System] File no longer available."))
+		m.fileMenuID = ""
+		return
+	}
+
+	dest := expandPath(destInput)
+	if dest == "" {
+		// Back to the menu, empty input just cancels completely
+		m.fileMenuID = ""
+		m.messages = append(m.messages, systemStyle.Render("[System] Save cancelled."))
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		m.messages = append(m.messages, errorStyle.Render("[Error] Cannot create folder: ")+err.Error())
+		return
+	}
+	if err := copyFile(entry.SavePath, dest); err != nil {
+		m.messages = append(m.messages, errorStyle.Render("[Error] Save failed: ")+err.Error())
+		return
+	}
+
+	m.savedPaths[id] = dest
+	m.fileMenuID = ""
+	m.messages = append(m.messages,
+		successStyle.Render(fmt.Sprintf("[System] ✓ Saved %s to %s", m.tagForFile(id), dest)))
+}
+
+// openReceivedFolder opens the folder containing the saved (or spooled) file.
+func (m *Model) openReceivedFolder(fileID string) {
+	var dir string
+	if dest, ok := m.savedPaths[fileID]; ok {
+		dir = filepath.Dir(dest)
+	} else if entry, ok := m.receivedFiles[fileID]; ok {
+		dir = filepath.Dir(entry.SavePath)
+	} else {
+		return
+	}
+
+	if err := openFolder(dir); err != nil {
+		m.messages = append(m.messages, errorStyle.Render("[Error] Cannot open folder: ")+err.Error())
+	} else {
+		m.messages = append(m.messages, systemStyle.Render("[System] Opened folder: ")+dir)
+	}
+}
+
+// restoreMode returns the mode that should follow a save-as action.
+func (m Model) restoreMode() string {
+	if m.connectedPeer != "" {
+		return "chat"
+	}
+	return "normal"
+}
+
+// ---- helpers ----
+
+// expandPath expands a leading ~ to the user's home directory.
+func expandPath(p string) string {
+	p = strings.TrimSpace(p)
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = filepath.Join(home, p[1:])
+		}
+	}
+	return p
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
+}
+
+// openFolder opens the given folder in the OS file manager.
+func openFolder(dir string) error {
+	switch runtime.GOOS {
+	case "windows":
+		// Start (not Run) so an odd explorer exit code doesn't surface as an error
+		return exec.Command("explorer", dir).Start()
+	case "darwin":
+		return exec.Command("open", dir).Start()
+	default:
+		return exec.Command("xdg-open", dir).Start()
+	}
+}
+
 // Commands
 
 func registerUser(client *signaling.Client) tea.Cmd {
@@ -545,11 +982,11 @@ func checkForOffers(m *Model) tea.Cmd {
 	return func() tea.Msg {
 		// Since WebSocket connections directly trigger the incoming webhook on the server,
 		// there are no "offers" to poll from the signaling server anymore.
-		// However, we still need to check if the peer we dialed has accepted and marked themselves 
+		// However, we still need to check if the peer we dialed has accepted and marked themselves
 		// "chatting" or dropped... wait, no we don't.
 		// If we are "connecting", we are just waiting for the peer to accept the WebSocket connection on their end.
 		// So this function is largely a no-op now, except maybe to check if the peer drops offline.
-		
+
 		return nil
 	}
 }

@@ -23,8 +23,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Message represents an encrypted message
+// Message represents an encrypted message. Type selects the payload kind:
+// "" / "chat" plain chat text, "file_offer" FileOfferInfo JSON,
+// "file_chunk" [16-byte file id][raw bytes], "file_end" 16-byte file id.
 type Message struct {
+	Type      string `json:"type,omitempty"`
 	Content   []byte `json:"content"`
 	Signature []byte `json:"signature"`
 	Timestamp int64  `json:"timestamp"`
@@ -50,6 +53,14 @@ type Manager struct {
 	sharedSecret  [32]byte
 	peerIDKey     []byte // Ed25519 public key for verification
 	keepAliveStop chan struct{}
+
+	// File transfer state
+	fileMu         sync.Mutex
+	onFileOffer    func(FileOfferInfo)
+	onFileProgress func(FileProgress)
+	onFileDone     func(FileResult)
+	outgoing       *fileSendState
+	incoming       map[string]*fileRecvState
 
 	// Active connection
 	conn *websocket.Conn
@@ -80,6 +91,7 @@ func NewManager(id *identity.Identity, dataDir string) *Manager {
 		dataDir:   dataDir,
 		ctx:       ctx,
 		ctxCancel: cancel,
+		incoming:  make(map[string]*fileRecvState),
 	}
 }
 
@@ -414,14 +426,30 @@ func (m *Manager) readLoop(conn *websocket.Conn) {
 			continue
 		}
 
-		if m.onMessage != nil {
-			m.onMessage(string(message.Content))
+		// Dispatch by message type; signature already verified for all types.
+		switch message.Type {
+		case "", "chat":
+			if m.onMessage != nil {
+				m.onMessage(string(message.Content))
+			}
+		case "file_offer":
+			m.handleFileOffer(message.Content)
+		case "file_chunk":
+			m.handleFileChunk(message.Content)
+		case "file_end":
+			m.handleFileEnd(message.Content)
 		}
 	}
 }
 
-// SendMessage sends an encrypted message
+// SendMessage sends an encrypted chat message
 func (m *Manager) SendMessage(text string) error {
+	return m.writeMessage("chat", []byte(text))
+}
+
+// writeMessage signs, encrypts and writes one message over the
+// connection. Safe for concurrent use (chat + file chunks).
+func (m *Manager) writeMessage(messageType string, content []byte) error {
 	m.mu.Lock()
 	if !m.connected || m.conn == nil {
 		m.mu.Unlock()
@@ -433,7 +461,8 @@ func (m *Manager) SendMessage(text string) error {
 	m.mu.Unlock()
 
 	msg := Message{
-		Content:   []byte(text),
+		Type:      messageType,
+		Content:   content,
 		Timestamp: time.Now().Unix(),
 	}
 
@@ -456,6 +485,9 @@ func (m *Manager) SendMessage(text string) error {
 
 // CloseConnection closes only the active websocket connection (not the server)
 func (m *Manager) CloseConnection() {
+	// Cancel any in-flight file transfers first
+	m.abortTransfers("connection closed during transfer")
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
